@@ -1,0 +1,360 @@
+use std::{collections::HashMap, fs, path::PathBuf, time::Instant};
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use tracing::{error, info, warn};
+use walkdir::WalkDir;
+
+use crate::util::{
+    config::{Config, ReadConfig, config_ref},
+    mfs::MapFileSystem,
+    path_ext::PathHelper,
+};
+
+const INSTANCE_DIR_NAME: &'static str = "instance";
+const INDEX_DIR_NAME: &'static str = "index";
+const LAYER_DIR_NAME: &'static str = "layer";
+const MOD_DIR_NAME: &'static str = "mod";
+
+trait ReadConfigSugarCube: ReadConfig {
+    fn instance_dir(&self, id: &str) -> PathBuf {
+        self.data_dir().join(id).join(INSTANCE_DIR_NAME)
+    }
+    fn index_dir(&self, id: &str) -> PathBuf {
+        self.data_dir().join(id).join(INDEX_DIR_NAME)
+    }
+    fn layer_dir(&self, id: &str) -> PathBuf {
+        self.data_dir().join(id).join(LAYER_DIR_NAME)
+    }
+    fn mod_dir(&self, id: &str) -> PathBuf {
+        self.data_dir().join(id).join(MOD_DIR_NAME)
+    }
+}
+
+impl ReadConfigSugarCube for Config {}
+
+type InstanceMap = HashMap<String, SugarCubeInstance>;
+type InstanceConfigMap = HashMap<String, SugarCubeInstanceConfig>;
+type IndexMap = HashMap<String, PathBuf>;
+type LayerMap = HashMap<String, MapFileSystem>;
+type ModMap = HashMap<String, HashMap<String, PathBuf>>;
+type ModRefMap = HashMap<(String, String), PathBuf>;
+
+#[derive(Debug)]
+pub struct SugarCubeInfo {
+    pub name: Option<String>,
+    pub instances: InstanceMap,
+    pub indexes: IndexMap,
+    pub layers: LayerMap,
+    pub mods: ModMap,
+
+    pub use_mods: bool,
+    pub use_save_sync_mod: bool,
+}
+
+#[derive(Debug)]
+pub struct SugarCubeInstance {
+    pub id: String,
+    pub name: Option<String>,
+    pub index_path: PathBuf,
+    pub layer_merged: MapFileSystem,
+    pub mods_ref: ModRefMap,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SugarCubeInstanceConfig {
+    pub id: String,
+    pub name: Option<String>,
+    pub index: String,
+    pub layers: Vec<String>,
+    pub mods: Vec<(String, String)>,
+}
+
+pub(super) fn create_sc_info(
+    id: &str,
+    name: Option<String>,
+    use_mods: bool,
+    use_save_sync_mod: bool,
+) -> Result<SugarCubeInfo> {
+    let indexes = create_indexes(id);
+    let layers = create_layers(id);
+    let mods = if use_mods {
+        create_mods(id)?
+    } else {
+        HashMap::new()
+    };
+
+    let instances = create_instances(id, &indexes, &layers, &mods)?;
+
+    Ok(SugarCubeInfo {
+        name,
+        instances,
+        indexes,
+        layers,
+        mods,
+        use_mods,
+        use_save_sync_mod,
+    })
+}
+
+fn create_instances(
+    id: &str,
+    index_map: &IndexMap,
+    layer_map: &LayerMap,
+    mod_map: &ModMap,
+) -> Result<InstanceMap> {
+    let instance_dir = config_ref().instance_dir(id);
+    let walker = WalkDir::new(instance_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension_eqs(&["json", "toml", "yaml", "yml"]));
+
+    let mut map = HashMap::new();
+    let start = Instant::now();
+
+    for entry in walker {
+        let path = entry.path();
+        let lowercase_ext = path
+            .extension()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_lowercase();
+        let ext = lowercase_ext.as_str();
+
+        let content = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) => {
+                error!("Error reading file {}: {}", path.display(), e);
+                continue;
+            }
+        };
+
+        let instance_config: SugarCubeInstanceConfig = match ext {
+            "json" => serde_json::from_str(content.as_str())?,
+            "toml" => toml::from_str(content.as_str())?,
+            "yaml" | "yml" => serde_yaml::from_str(content.as_str())?,
+            _ => {
+                warn!(
+                    "Unsupported file extension {} for instance config, why are you here?? : {}",
+                    ext,
+                    path.display()
+                );
+                continue;
+            }
+        };
+
+        // Resolving references
+        let index_ref = match index_map.get(&instance_config.index) {
+            Some(r) => r,
+            None => {
+                warn!(
+                    "Index {} referenced by {} not found, skipping",
+                    instance_config.index, instance_config.id
+                );
+                continue;
+            }
+        };
+
+        let mut merged_layer_map = HashMap::new();
+        for layer_id in instance_config.layers {
+            if let Some(mfs) = layer_map.get(&layer_id) {
+                for (k, v) in mfs.iter() {
+                    merged_layer_map.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        let merged_mfs = MapFileSystem::new(merged_layer_map);
+
+        let mut mod_ref_map = HashMap::new();
+
+        for (mod_id, mod_sub_id) in instance_config.mods {
+            if let Some(mod_subs) = mod_map.get(&mod_id) {
+                if let Some(mod_path) = mod_subs.get(&mod_sub_id) {
+                    mod_ref_map.insert((mod_id, mod_sub_id), mod_path.clone());
+                } else {
+                    warn!(
+                        "Mod {} with sub_id {} referenced by {} not found, skipping",
+                        mod_id, mod_sub_id, instance_config.id
+                    );
+                    continue;
+                }
+            } else {
+                warn!(
+                    "Mod {} referenced by {} not found, skipping",
+                    mod_id, instance_config.id
+                );
+                continue;
+            }
+        }
+
+        let instance = SugarCubeInstance {
+            id: instance_config.id.clone(),
+            name: instance_config.name,
+            index_path: index_ref.clone(),
+            layer_merged: merged_mfs,
+            mods_ref: mod_ref_map,
+        };
+
+        map.insert(instance_config.id.clone(), instance);
+    }
+
+    info!(
+        "Created {} instances for {} in {}ms",
+        map.len(),
+        id,
+        start.elapsed().as_millis()
+    );
+    Ok(map)
+}
+
+fn create_indexes(id: &str) -> HashMap<String, PathBuf> {
+    let index_dir = config_ref().index_dir(id);
+    let walker = WalkDir::new(index_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .filter(|e| e.path().extension_eq("html"));
+
+    let mut map = HashMap::new();
+    let start = Instant::now();
+
+    for entry in walker {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        map.insert(name, path.to_path_buf());
+    }
+
+    info!(
+        "Created {} indexes for {} in {}ms",
+        map.len(),
+        id,
+        start.elapsed().as_millis()
+    );
+    map
+}
+
+fn create_layers(id: &str) -> LayerMap {
+    let layer_dir = config_ref().layer_dir(id);
+    let walker = WalkDir::new(layer_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_dir());
+
+    let mut map = HashMap::new();
+    let start = Instant::now();
+
+    for entry in walker {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().to_string();
+        let now = Instant::now();
+        let mfs = match MapFileSystem::new_dir(&path) {
+            Ok(mfs) => {
+                info!(
+                    "Created MapFileSystem in {} in {}ms",
+                    name,
+                    now.elapsed().as_millis()
+                );
+                mfs
+            }
+            Err(e) => {
+                error!(
+                    "Error creating MapFileSystem in {}, skipping: {}",
+                    path.display(),
+                    e
+                );
+                continue;
+            }
+        };
+
+        map.insert(name, mfs);
+    }
+
+    info!(
+        "Created {} layers for {} in {}ms",
+        map.len(),
+        id,
+        start.elapsed().as_millis()
+    );
+    map
+}
+
+fn create_mods(id: &str) -> Result<ModMap> {
+    let mod_dir = config_ref().mod_dir(id);
+    let mut repo = HashMap::new();
+    let start = Instant::now();
+
+    let mod_roots = mod_dir
+        .read_dir()
+        .map_err(|e| {
+            error!("Error reading mod directory {}: {}", mod_dir.display(), e);
+            e
+        })?
+        .filter_map(|entry_result| {
+            entry_result
+                .map_err(|e| {
+                    error!("Error reading mod directory entry: {}", e);
+                })
+                .ok()
+        })
+        .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_dir()));
+
+    for entry in mod_roots {
+        let mod_id = entry.file_name().to_string_lossy().to_string();
+        let mod_files = WalkDir::new(entry.path())
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .filter(|e| e.path().extension_eq("zip"))
+            .map(|e| {
+                let path = e.path().to_path_buf();
+                let filename = e.file_name().to_string_lossy();
+                // Remove .zip extension to get the mod name
+                let name = if let Some(name) = filename.strip_suffix(".zip") {
+                    name.to_string()
+                } else {
+                    filename.to_string()
+                };
+                (name, path)
+            })
+            .collect::<HashMap<String, PathBuf>>();
+
+        repo.insert(mod_id, mod_files);
+    }
+
+    info!(
+        "Created {} mods for {} in {}ms",
+        repo.len(),
+        id,
+        start.elapsed().as_millis()
+    );
+    Ok(repo)
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_instance_config() {
+        let config = SugarCubeInstanceConfig {
+            id: "test".to_string(),
+            name: Some("Test Instance".to_string()),
+            index: "index".to_string(),
+            layers: vec!["layer1".to_string(), "layer2".to_string()],
+            mods: vec![
+                ("mod1".to_string(), "1.0".to_string()),
+                ("mod2".to_string(), "1.3.0".to_string()),
+            ],
+        };
+
+        let ser_toml = toml::to_string_pretty(&config).unwrap();
+        println!("Serialized toml: {}", ser_toml);
+
+        let ser_yaml = serde_yaml::to_string(&config).unwrap();
+        println!("Serialized yaml: {}", ser_yaml);
+
+        let ser_json = serde_json::to_string_pretty(&config).unwrap();
+        println!("Serialized json: {}", ser_json);
+    }
+}
