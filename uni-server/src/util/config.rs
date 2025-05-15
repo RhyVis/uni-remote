@@ -18,8 +18,6 @@ pub struct Config {
 pub trait ReadConfig {
     fn port(&self) -> u16;
     fn data_dir(&self) -> PathBuf;
-    fn manage(&self) -> &HashMap<String, ManageInfo>;
-    fn manage_ref(&self, name: impl AsRef<String>) -> Option<&ManageInfo>;
     fn manage_iter(&self) -> impl Iterator<Item = (&String, &ManageInfo)>;
     fn manage_size(&self) -> usize;
     fn manage_empty(&self) -> bool {
@@ -44,14 +42,6 @@ impl ReadConfig for Config {
 
     fn data_dir(&self) -> PathBuf {
         cd_in(&self.root)
-    }
-
-    fn manage(&self) -> &HashMap<String, ManageInfo> {
-        &self.manage
-    }
-
-    fn manage_ref(&self, name: impl AsRef<String>) -> Option<&ManageInfo> {
-        self.manage.get(name.as_ref())
     }
 
     fn manage_iter(&self) -> impl Iterator<Item = (&String, &ManageInfo)> {

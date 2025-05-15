@@ -1,14 +1,21 @@
 use std::{collections::HashMap, fs, path::PathBuf, time::Instant};
 
 use anyhow::Result;
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use walkdir::WalkDir;
 
-use crate::util::{
-    config::{Config, ReadConfig, config_ref},
-    mfs::MapFileSystem,
-    path_ext::PathHelper,
+use crate::{
+    constants::SSI_MOD_ID,
+    util::{
+        config::{Config, ReadConfig, config_ref},
+        mfs::MapFileSystem,
+        path_ext::PathHelper,
+    },
 };
 
 const INSTANCE_DIR_NAME: &'static str = "instance";
@@ -34,7 +41,6 @@ trait ReadConfigSugarCube: ReadConfig {
 impl ReadConfigSugarCube for Config {}
 
 type InstanceMap = HashMap<String, SugarCubeInstance>;
-type InstanceConfigMap = HashMap<String, SugarCubeInstanceConfig>;
 type IndexMap = HashMap<String, PathBuf>;
 type LayerMap = HashMap<String, MapFileSystem>;
 type ModMap = HashMap<String, HashMap<String, PathBuf>>;
@@ -50,6 +56,46 @@ pub struct SugarCubeInfo {
 
     pub use_mods: bool,
     pub use_save_sync_mod: bool,
+}
+
+impl SugarCubeInfo {
+    pub fn get_instance(&self, id: &str) -> Option<&SugarCubeInstance> {
+        self.instances.get(id)
+    }
+    pub fn get_mod(&self, mod_id: &str, mod_sub_id: &str) -> Option<&PathBuf> {
+        self.mods.get(mod_id).and_then(|m| m.get(mod_sub_id))
+    }
+
+    pub fn generate_mod_list(
+        &self,
+        instance_id: &str,
+        manage_id: &str,
+    ) -> Result<Vec<String>, Response> {
+        if !self.use_mods {
+            warn!("Mod list generation is disabled");
+            return Err(
+                (StatusCode::BAD_REQUEST, "Mod list generation is disabled").into_response()
+            );
+        }
+        let instance = self.get_instance(instance_id).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("Instance ID {instance_id} not found"),
+            )
+                .into_response()
+        })?;
+        let mut mod_list = instance
+            .mods_ref
+            .keys()
+            .map(|(mod_id, mod_sub_id)| format!("/repo/sc/mod/{manage_id}/{mod_id}/{mod_sub_id}"))
+            .collect::<Vec<_>>();
+
+        if self.use_save_sync_mod {
+            mod_list.push(format!("/sc/mod/{manage_id}/{SSI_MOD_ID}/0").to_string());
+        }
+
+        Ok(mod_list)
+    }
 }
 
 #[derive(Debug)]

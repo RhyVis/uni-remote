@@ -1,5 +1,5 @@
 use anyhow::Result;
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 use tracing::warn;
 use walkdir::WalkDir;
 
@@ -7,6 +7,34 @@ use walkdir::WalkDir;
 #[derive(Debug, Clone)]
 pub enum FileNode {
     File(String),
+}
+
+impl FileNode {
+    pub fn resolve(&self) -> Option<(Vec<u8>, String)> {
+        match self {
+            FileNode::File(path) => {
+                let path = Path::new(path);
+                if path.exists() && path.is_file() {
+                    match fs::read(&path) {
+                        Ok(data) => Some((
+                            data,
+                            path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string(),
+                        )),
+                        Err(err) => {
+                            warn!("Failed to read file {:?}: {}", path, err);
+                            None
+                        }
+                    }
+                } else {
+                    warn!("File not found or not a file: {:?}", path);
+                    None
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -59,10 +87,6 @@ impl MapFileSystem {
 
     pub fn get(&self, path: &str) -> Option<&FileNode> {
         self.map.get(path)
-    }
-
-    pub fn insert(&mut self, path: String, node: FileNode) {
-        self.map.insert(path, node);
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&String, &FileNode)> {

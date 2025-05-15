@@ -3,6 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::Router;
 use element::load_data_dir;
+use routes::main_routes;
 use tokio::net::TcpListener;
 use tracing::info;
 use util::{
@@ -10,9 +11,9 @@ use util::{
     config::{ReadConfig, config_ref},
 };
 
-#[allow(dead_code)]
+mod constants;
 mod element;
-#[allow(dead_code)]
+mod routes;
 mod util;
 
 #[tokio::main]
@@ -25,7 +26,9 @@ async fn main() -> Result<()> {
     let port = config_ref().port();
     let addr = format!("0.0.0.0:{port}");
 
-    let app = Router::new().with_state(Arc::new(AppState(loaded_mapping)));
+    let app = Router::new()
+        .merge(main_routes())
+        .with_state(Arc::new(AppState::new(loaded_mapping)));
     let listener = TcpListener::bind(&addr).await?;
     info!("Listening on {addr}");
 
