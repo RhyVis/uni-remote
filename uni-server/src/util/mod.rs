@@ -1,20 +1,35 @@
 use std::{env::current_dir, path::PathBuf};
 use tracing::{error, error_span};
 
+use crate::element::LoadedMapping;
+
 pub(crate) mod config;
 pub(crate) mod mfs;
 pub(crate) mod path_ext;
 
+#[derive(Debug)]
+pub struct AppState(pub LoadedMapping);
+
 /// Current working directory, absolute path
 pub fn cd() -> PathBuf {
-    current_dir().unwrap_or_else(|e| {
+    let base = current_dir().unwrap_or_else(|e| {
         let span = error_span!("util::cd");
         span.in_scope(|| {
             error!("Failed to get current directory: {}", e);
             error!("Using default path: .");
         });
         PathBuf::from(".")
-    })
+    });
+
+    #[cfg(debug_assertions)]
+    {
+        return base.join(".run");
+    }
+
+    #[cfg(not(debug_assertions))]
+    {
+        return base;
+    }
 }
 
 /// Change directory, relative to current working directory

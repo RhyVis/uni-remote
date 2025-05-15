@@ -76,8 +76,8 @@ pub(super) fn create_sc_info(
     use_mods: bool,
     use_save_sync_mod: bool,
 ) -> Result<SugarCubeInfo> {
-    let indexes = create_indexes(id);
-    let layers = create_layers(id);
+    let indexes = create_indexes(id)?;
+    let layers = create_layers(id)?;
     let mods = if use_mods {
         create_mods(id)?
     } else {
@@ -104,10 +104,43 @@ fn create_instances(
     mod_map: &ModMap,
 ) -> Result<InstanceMap> {
     let instance_dir = config_ref().instance_dir(id);
-    let walker = WalkDir::new(instance_dir)
+    if !instance_dir.exists() {
+        warn!(
+            "Instance directory {} does not exist, initialized",
+            instance_dir.display()
+        );
+        fs::create_dir(&instance_dir)?;
+
+        let example = SugarCubeInstanceConfig {
+            id: "example".to_string(),
+            name: Some("Example Instance".to_string()),
+            index: "index".to_string(),
+            layers: vec!["layer1".to_string(), "layer2".to_string()],
+            mods: vec![
+                ("mod1".to_string(), "1.0".to_string()),
+                ("mod2".to_string(), "0.3.9-test".to_string()),
+            ],
+        };
+        let example_path = instance_dir.join("_example.yaml");
+        let example_str = format!(
+            "{}\n{}",
+            "# This is an example file for instance config, always ignored",
+            serde_yaml::to_string(&example)?
+        );
+        fs::write(example_path, example_str)?;
+        info!(
+            "Created example instance config at {}",
+            instance_dir.join("_example.yaml").display()
+        );
+
+        return Ok(HashMap::new());
+    }
+
+    let walker = WalkDir::new(&instance_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
+        .filter(|e| e.file_name() != "_example.yaml")
         .filter(|e| e.path().extension_eqs(&["json", "toml", "yaml", "yml"]));
 
     let mut map = HashMap::new();
@@ -199,18 +232,35 @@ fn create_instances(
         map.insert(instance_config.id.clone(), instance);
     }
 
-    info!(
-        "Created {} instances for {} in {}ms",
-        map.len(),
-        id,
-        start.elapsed().as_millis()
-    );
+    if map.is_empty() {
+        warn!(
+            "No valid instances found for {} in {}",
+            id,
+            instance_dir.display()
+        );
+    } else {
+        info!(
+            "Created {} instances for {} in {}ms",
+            map.len(),
+            id,
+            start.elapsed().as_millis()
+        );
+    }
     Ok(map)
 }
 
-fn create_indexes(id: &str) -> HashMap<String, PathBuf> {
+fn create_indexes(id: &str) -> Result<IndexMap> {
     let index_dir = config_ref().index_dir(id);
-    let walker = WalkDir::new(index_dir)
+    if !index_dir.exists() {
+        warn!(
+            "Index directory {} does not exist, initialized",
+            index_dir.display()
+        );
+        fs::create_dir(&index_dir)?;
+        return Ok(HashMap::new());
+    }
+
+    let walker = WalkDir::new(&index_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
@@ -221,37 +271,68 @@ fn create_indexes(id: &str) -> HashMap<String, PathBuf> {
 
     for entry in walker {
         let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
+        let name = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         map.insert(name, path.to_path_buf());
     }
 
-    info!(
-        "Created {} indexes for {} in {}ms",
-        map.len(),
-        id,
-        start.elapsed().as_millis()
-    );
-    map
+    if map.is_empty() {
+        warn!(
+            "No valid indexes found for {} in {}",
+            id,
+            index_dir.display()
+        );
+    } else {
+        info!(
+            "Created {} indexes for {} in {}ms",
+            map.len(),
+            id,
+            start.elapsed().as_millis()
+        );
+    }
+    Ok(map)
 }
 
-fn create_layers(id: &str) -> LayerMap {
+fn create_layers(id: &str) -> Result<LayerMap> {
     let layer_dir = config_ref().layer_dir(id);
-    let walker = WalkDir::new(layer_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_dir());
+    if !layer_dir.exists() {
+        warn!(
+            "Layer directory {} does not exist, initialized",
+            layer_dir.display()
+        );
+        fs::create_dir(&layer_dir)?;
+        return Ok(HashMap::new());
+    }
+
+    let layer_roots = layer_dir
+        .read_dir()
+        .map_err(|e| {
+            error!("Error reading mod directory {}: {}", layer_dir.display(), e);
+            e
+        })?
+        .filter_map(|entry_result| {
+            entry_result
+                .map_err(|e| {
+                    error!("Error reading mod directory entry: {}", e);
+                })
+                .ok()
+        })
+        .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_dir()));
 
     let mut map = HashMap::new();
     let start = Instant::now();
 
-    for entry in walker {
+    for entry in layer_roots {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
         let now = Instant::now();
         let mfs = match MapFileSystem::new_dir(&path) {
             Ok(mfs) => {
                 info!(
-                    "Created MapFileSystem in {} in {}ms",
+                    "Initialized MFS by dir {} in {}ms",
                     name,
                     now.elapsed().as_millis()
                 );
@@ -270,17 +351,34 @@ fn create_layers(id: &str) -> LayerMap {
         map.insert(name, mfs);
     }
 
-    info!(
-        "Created {} layers for {} in {}ms",
-        map.len(),
-        id,
-        start.elapsed().as_millis()
-    );
-    map
+    if map.is_empty() {
+        warn!(
+            "No valid layers found for {} in {}",
+            id,
+            layer_dir.display()
+        );
+    } else {
+        info!(
+            "Created {} layers for {} in {}ms",
+            map.len(),
+            id,
+            start.elapsed().as_millis()
+        );
+    }
+    Ok(map)
 }
 
 fn create_mods(id: &str) -> Result<ModMap> {
     let mod_dir = config_ref().mod_dir(id);
+    if !mod_dir.exists() {
+        warn!(
+            "Mod directory {} does not exist, initialized",
+            mod_dir.display()
+        );
+        fs::create_dir(&mod_dir)?;
+        return Ok(HashMap::new());
+    }
+
     let mut repo = HashMap::new();
     let start = Instant::now();
 
@@ -322,12 +420,16 @@ fn create_mods(id: &str) -> Result<ModMap> {
         repo.insert(mod_id, mod_files);
     }
 
-    info!(
-        "Created {} mods for {} in {}ms",
-        repo.len(),
-        id,
-        start.elapsed().as_millis()
-    );
+    if repo.is_empty() {
+        warn!("No valid mods found for {} in {}", id, mod_dir.display());
+    } else {
+        info!(
+            "Created {} mods for {} in {}ms",
+            repo.len(),
+            id,
+            start.elapsed().as_millis()
+        );
+    }
     Ok(repo)
 }
 

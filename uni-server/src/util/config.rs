@@ -5,7 +5,10 @@ use std::{collections::HashMap, fs, path::PathBuf, sync::OnceLock};
 use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
+    #[serde(default)]
+    port: u16,
     #[serde(default)]
     root: String,
     #[serde(default)]
@@ -13,15 +16,21 @@ pub struct Config {
 }
 
 pub trait ReadConfig {
+    fn port(&self) -> u16;
     fn data_dir(&self) -> PathBuf;
     fn manage(&self) -> &HashMap<String, ManageInfo>;
     fn manage_ref(&self, name: impl AsRef<String>) -> Option<&ManageInfo>;
     fn manage_iter(&self) -> impl Iterator<Item = (&String, &ManageInfo)>;
+    fn manage_size(&self) -> usize;
+    fn manage_empty(&self) -> bool {
+        self.manage_size() == 0
+    }
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
+            port: 3500,
             root: String::from("data"),
             manage: HashMap::new(),
         }
@@ -29,6 +38,10 @@ impl Default for Config {
 }
 
 impl ReadConfig for Config {
+    fn port(&self) -> u16 {
+        self.port
+    }
+
     fn data_dir(&self) -> PathBuf {
         cd_in(&self.root)
     }
@@ -44,6 +57,10 @@ impl ReadConfig for Config {
     fn manage_iter(&self) -> impl Iterator<Item = (&String, &ManageInfo)> {
         self.manage.iter()
     }
+
+    fn manage_size(&self) -> usize {
+        self.manage.len()
+    }
 }
 
 pub fn config_ref() -> &'static Config {
@@ -58,6 +75,7 @@ pub fn config_ref() -> &'static Config {
                 if err.kind() == std::io::ErrorKind::NotFound {
                     let default = Config::default();
                     let default_content = toml::to_string_pretty(&default)?;
+                    fs::create_dir_all(&config_path.parent().unwrap_or(&config_path))?;
                     fs::write(&config_path, default_content)?;
                     info!(
                         "Config file not found, created default config file at: {}",
@@ -78,19 +96,32 @@ pub fn config_ref() -> &'static Config {
     CONFIG.get_or_init(|| load().expect("Cannot load config file at all!"))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ManageInfo {
     #[serde(default)]
     pub name: Option<String>,
     pub mode: ManageType,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+fn default_enter_path() -> String {
+    const DEFAULT_ENTER_PATH: &str = "index.html";
+    DEFAULT_ENTER_PATH.to_string()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "kebab-case")]
 pub enum ManageType {
-    #[default]
-    Plain,
+    Plain {
+        #[serde(default = "default_enter_path")]
+        enter_path: String,
+    },
     SugarCube {
+        #[serde(default)]
         use_mods: bool,
+        #[serde(default)]
         use_save_sync_mod: bool,
     },
 }
@@ -101,7 +132,9 @@ mod test {
 
     #[test]
     fn test_ser() {
-        let manage_type = ManageType::Plain;
+        let manage_type = ManageType::Plain {
+            enter_path: "index.html".to_string(),
+        };
         let info1 = ManageInfo {
             name: Some("Test".to_string()),
             mode: manage_type.clone(),
@@ -127,8 +160,8 @@ mod test {
         manage.insert("test2".to_string(), info2);
 
         let config = Config {
-            root: "data".to_string(),
             manage: manage,
+            ..Default::default()
         };
         let ser3 = toml::to_string_pretty(&config).unwrap();
         println!("ser3: ");
