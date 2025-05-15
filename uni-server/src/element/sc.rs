@@ -1,10 +1,16 @@
-use std::{collections::HashMap, fs, path::PathBuf, time::Instant};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+    time::{Instant, SystemTime},
+};
 
 use anyhow::Result;
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use bincode::config::{Configuration, standard};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use walkdir::WalkDir;
@@ -47,11 +53,10 @@ type ModMap = HashMap<String, HashMap<String, PathBuf>>;
 type ModRefMap = HashMap<(String, String), PathBuf>;
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SugarCubeInfo {
     pub name: Option<String>,
     pub instances: InstanceMap,
-    pub indexes: IndexMap,
-    pub layers: LayerMap,
     pub mods: ModMap,
 
     pub use_mods: bool,
@@ -99,6 +104,7 @@ impl SugarCubeInfo {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct SugarCubeInstance {
     pub id: String,
     pub name: Option<String>,
@@ -114,6 +120,12 @@ pub struct SugarCubeInstanceConfig {
     pub index: String,
     pub layers: Vec<String>,
     pub mods: Vec<(String, String)>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct LayerCache {
+    last_modified: SystemTime,
+    layer_map: LayerMap,
 }
 
 pub(super) fn create_sc_info(
@@ -135,8 +147,6 @@ pub(super) fn create_sc_info(
     Ok(SugarCubeInfo {
         name,
         instances,
-        indexes,
-        layers,
         mods,
         use_mods,
         use_save_sync_mod,
@@ -353,6 +363,65 @@ fn create_layers(id: &str) -> Result<LayerMap> {
         return Ok(HashMap::new());
     }
 
+    let start = Instant::now();
+
+    fn get_latest_modified_time(dir: impl AsRef<Path>) -> SystemTime {
+        let mut latest_time = fs::metadata(dir.as_ref())
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+
+        for entry in WalkDir::new(dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name() != "cache.bin")
+        {
+            if let Ok(metadata) = entry.metadata() {
+                if let Ok(modified) = metadata.modified() {
+                    if modified > latest_time {
+                        latest_time = modified;
+                    }
+                }
+            }
+        }
+
+        latest_time
+    }
+
+    let layer_cache_path = layer_dir.join("cache.bin");
+    let current_modified = get_latest_modified_time(&layer_dir);
+
+    if let Ok(cache_file) = fs::read(&layer_cache_path) {
+        if let Ok((cache, _)) = bincode::serde::decode_from_slice::<LayerCache, Configuration>(
+            &cache_file,
+            bincode::config::standard(),
+        ) {
+            if current_modified <= cache.last_modified {
+                info!(
+                    "Using cached layer map for {} with {} items, created on '{}' ({}ms)",
+                    id,
+                    cache.layer_map.len(),
+                    chrono::DateTime::<chrono::Local>::from(cache.last_modified)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string(),
+                    start.elapsed().as_millis()
+                );
+                return Ok(cache.layer_map);
+            } else {
+                info!(
+                    "Cache for {} is outdated, last modified on '{}', current modified on '{}'",
+                    id,
+                    chrono::DateTime::<chrono::Local>::from(cache.last_modified)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string(),
+                    chrono::DateTime::<chrono::Local>::from(current_modified)
+                        .format("%Y-%m-%d %H:%M:%S")
+                        .to_string()
+                );
+            }
+        }
+    }
+    info!("No valid cache found for {}, creating new layer map", id);
+
     let layer_roots = layer_dir
         .read_dir()
         .map_err(|e| {
@@ -369,7 +438,6 @@ fn create_layers(id: &str) -> Result<LayerMap> {
         .filter(|entry| entry.file_type().map_or(false, |ft| ft.is_dir()));
 
     let mut map = HashMap::new();
-    let start = Instant::now();
 
     for entry in layer_roots {
         let path = entry.path();
@@ -378,7 +446,7 @@ fn create_layers(id: &str) -> Result<LayerMap> {
         let mfs = match MapFileSystem::new_dir(&path) {
             Ok(mfs) => {
                 info!(
-                    "Initialized MFS by dir {} in {}ms",
+                    "Initialized MFS by dir '{}' in {}ms",
                     name,
                     now.elapsed().as_millis()
                 );
@@ -410,6 +478,20 @@ fn create_layers(id: &str) -> Result<LayerMap> {
             id,
             start.elapsed().as_millis()
         );
+
+        let cache = LayerCache {
+            last_modified: current_modified,
+            layer_map: map.clone(),
+        };
+
+        if let Ok(content) = bincode::serde::encode_to_vec(cache, standard()) {
+            fs::write(layer_cache_path, content)?;
+        } else {
+            error!(
+                "Error writing layer cache to {}",
+                layer_cache_path.display()
+            );
+        }
     }
     Ok(map)
 }

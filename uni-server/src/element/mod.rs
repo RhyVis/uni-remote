@@ -5,7 +5,6 @@ use tracing::{error, info, warn};
 
 use crate::util::config::{ManageType, ReadConfig, config_ref};
 
-#[allow(dead_code)]
 pub(crate) mod sc;
 
 #[derive(Debug, Default)]

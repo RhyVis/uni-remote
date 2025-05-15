@@ -1,10 +1,11 @@
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs, path::Path};
 use tracing::warn;
 use walkdir::WalkDir;
 
 /// File Type
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FileNode {
     File(String),
 }
@@ -37,7 +38,7 @@ impl FileNode {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MapFileSystem {
     map: HashMap<String, FileNode>,
 }
