@@ -10,7 +10,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use bincode::config::{Configuration, standard};
+use bincode::config::{standard, Configuration};
 use serde::{Deserialize, Serialize};
 use tracing::{error, info, warn};
 use walkdir::WalkDir;
@@ -18,7 +18,7 @@ use walkdir::WalkDir;
 use crate::{
     constants::SSI_MOD_ID,
     util::{
-        config::{Config, ReadConfig, config_ref},
+        config::{config_ref, Config, ReadConfig},
         mfs::MapFileSystem,
         path_ext::PathHelper,
     },
@@ -53,7 +53,6 @@ type ModMap = HashMap<String, HashMap<String, PathBuf>>;
 type ModRefMap = HashMap<(String, String), PathBuf>;
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct SugarCubeInfo {
     pub name: Option<String>,
     pub instances: InstanceMap,
@@ -71,6 +70,13 @@ impl SugarCubeInfo {
         self.mods.get(mod_id).and_then(|m| m.get(mod_sub_id))
     }
 
+    pub fn check_instance(&self, id: &str) -> Option<Response> {
+        if self.instances.contains_key(id) {
+            None
+        } else {
+            Some((StatusCode::NOT_FOUND, format!("Instance ID {id} not found")).into_response())
+        }
+    }
     pub fn generate_mod_list(
         &self,
         instance_id: &str,
@@ -96,7 +102,7 @@ impl SugarCubeInfo {
             .collect::<Vec<_>>();
 
         if self.use_save_sync_mod {
-            mod_list.push(format!("/sc/mod/{manage_id}/{SSI_MOD_ID}/0").to_string());
+            mod_list.push(format!("/repo/sc/mod/{manage_id}/{SSI_MOD_ID}/0").to_string());
         }
 
         Ok(mod_list)
@@ -111,9 +117,10 @@ pub struct SugarCubeInstance {
     pub index_path: PathBuf,
     pub layer_merged: MapFileSystem,
     pub mods_ref: ModRefMap,
+    pub original_conf: SugarCubeInstanceConfig,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SugarCubeInstanceConfig {
     pub id: String,
     pub name: Option<String>,
@@ -246,8 +253,8 @@ fn create_instances(
         };
 
         let mut merged_layer_map = HashMap::new();
-        for layer_id in instance_config.layers {
-            if let Some(mfs) = layer_map.get(&layer_id) {
+        for layer_id in instance_config.layers.iter() {
+            if let Some(mfs) = layer_map.get(layer_id) {
                 for (k, v) in mfs.iter() {
                     merged_layer_map.insert(k.clone(), v.clone());
                 }
@@ -257,7 +264,7 @@ fn create_instances(
 
         let mut mod_ref_map = HashMap::new();
 
-        for (mod_id, mod_sub_id) in instance_config.mods {
+        for (mod_id, mod_sub_id) in instance_config.mods.iter().cloned() {
             if let Some(mod_subs) = mod_map.get(&mod_id) {
                 if let Some(mod_path) = mod_subs.get(&mod_sub_id) {
                     mod_ref_map.insert((mod_id, mod_sub_id), mod_path.clone());
@@ -277,15 +284,17 @@ fn create_instances(
             }
         }
 
+        let instance_id = instance_config.id.clone();
         let instance = SugarCubeInstance {
-            id: instance_config.id.clone(),
-            name: instance_config.name,
+            id: instance_id.clone(),
+            name: instance_config.name.clone(),
             index_path: index_ref.clone(),
             layer_merged: merged_mfs,
             mods_ref: mod_ref_map,
+            original_conf: instance_config,
         };
 
-        map.insert(instance_config.id.clone(), instance);
+        map.insert(instance_id, instance);
     }
 
     if map.is_empty() {
@@ -391,10 +400,9 @@ fn create_layers(id: &str) -> Result<LayerMap> {
     let current_modified = get_latest_modified_time(&layer_dir);
 
     if let Ok(cache_file) = fs::read(&layer_cache_path) {
-        if let Ok((cache, _)) = bincode::serde::decode_from_slice::<LayerCache, Configuration>(
-            &cache_file,
-            bincode::config::standard(),
-        ) {
+        if let Ok((cache, _)) =
+            bincode::serde::decode_from_slice::<LayerCache, Configuration>(&cache_file, standard())
+        {
             if current_modified <= cache.last_modified {
                 info!(
                     "Using cached layer map for {} with {} items, created on '{}' ({}ms)",

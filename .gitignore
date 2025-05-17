@@ -1,6 +1,3 @@
-target/
-debug/
-release/
-rls/
-*.o
-.vscode/
+*.code-workspace
+.idea
+.vscode

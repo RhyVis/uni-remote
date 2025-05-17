@@ -1,9 +1,9 @@
-use anyhow::{Ok, Result, anyhow};
-use sc::{SugarCubeInfo, create_sc_info};
+use anyhow::{anyhow, Ok, Result};
+use sc::{create_sc_info, SugarCubeInfo};
 use std::{collections::HashMap, fs, path::PathBuf};
 use tracing::{error, info, warn};
 
-use crate::util::config::{ManageType, ReadConfig, config_ref};
+use crate::util::config::{config_ref, ManageInfo, ManageType, ReadConfig};
 
 pub(crate) mod sc;
 
@@ -20,16 +20,23 @@ impl LoadedMapping {
     pub fn insert(&mut self, id: String, loaded_type: LoadedType) {
         self.map.insert(id, loaded_type);
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &LoadedType)> {
+        self.map.iter()
+    }
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum LoadedType {
     Plain {
         root_path: PathBuf,
         enter_path: PathBuf,
+        original_ref: &'static ManageInfo,
     },
     SugarCube {
         info: SugarCubeInfo,
+        original_ref: &'static ManageInfo,
     },
 }
 
@@ -37,12 +44,13 @@ pub fn load_data_dir() -> Result<LoadedMapping> {
     let config = config_ref();
     let mut mapping = LoadedMapping::default();
 
-    if !config.data_dir().exists() {
+    let data_dir = config.data_dir();
+    if !data_dir.exists() {
         warn!(
             "Data directory does not exist, creating: {}",
-            config.data_dir().display()
+            data_dir.display()
         );
-        fs::create_dir_all(config.data_dir())?;
+        fs::create_dir_all(&data_dir)?;
     }
     if config.manage_empty() {
         error!("At least one valid manage in 'config.toml' is required");
@@ -55,7 +63,7 @@ pub fn load_data_dir() -> Result<LoadedMapping> {
             id,
             manage_info.name.clone().unwrap_or("No name?".to_string())
         );
-        let path = config.data_dir().join(id);
+        let path = data_dir.join(id);
         if !path.exists() {
             warn!(
                 "Data directory for {} does not exist, creating: {}",
@@ -71,6 +79,7 @@ pub fn load_data_dir() -> Result<LoadedMapping> {
                 let loaded_type = LoadedType::Plain {
                     root_path: actual_path.clone(),
                     enter_path: actual_path.join(enter_path),
+                    original_ref: &manage_info,
                 };
 
                 mapping.insert(id.clone(), loaded_type);
@@ -78,15 +87,22 @@ pub fn load_data_dir() -> Result<LoadedMapping> {
 
             ManageType::SugarCube {
                 use_mods,
-                use_save_sync_mod,
+                use_save_sync,
             } => {
+                if *use_save_sync {
+                    let save_path = path.join("save");
+                    if !save_path.exists() {
+                        info!(
+                            "Creating save directory for {}: {}",
+                            id,
+                            save_path.display()
+                        );
+                        fs::create_dir(path.join("save"))?;
+                    }
+                }
                 let loaded_type = LoadedType::SugarCube {
-                    info: create_sc_info(
-                        id,
-                        manage_info.name.clone(),
-                        *use_mods,
-                        *use_save_sync_mod,
-                    )?,
+                    info: create_sc_info(id, manage_info.name.clone(), *use_mods, *use_save_sync)?,
+                    original_ref: &manage_info,
                 };
 
                 mapping.insert(id.clone(), loaded_type);

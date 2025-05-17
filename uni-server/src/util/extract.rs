@@ -3,7 +3,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::element::{LoadedType, sc::SugarCubeInfo};
+use crate::element::{sc::SugarCubeInfo, LoadedType};
 
 use super::AppState;
 
@@ -27,7 +27,7 @@ impl ExtractInfo for AppState {
                 format!("Info Id {id} found, but not SC type!"),
             )
                 .into_response()),
-            LoadedType::SugarCube { info } => Ok(info),
+            LoadedType::SugarCube { info, .. } => Ok(info),
         }
     }
 }

@@ -1,24 +1,26 @@
 use std::sync::Arc;
 
 use axum::{
-    Router,
     http::{
-        HeaderMap, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE, ETAG},
+        header::{CACHE_CONTROL, CONTENT_TYPE, ETAG}, HeaderMap,
+        StatusCode,
     },
     response::IntoResponse,
     routing::get,
+    Router,
 };
 use lazy_static::lazy_static;
 
 use crate::{
     constants::CACHE_HEADER,
     util::{
-        AppState,
         etag::{etag_check, etag_hash},
+        AppState,
     },
 };
 
+mod api;
+mod asset;
 mod play;
 mod repo;
 
@@ -33,6 +35,8 @@ pub fn main_routes() -> Router<Arc<AppState>> {
         .route("/favicon.ico", get(favicon))
         .nest("/play", play::routes())
         .nest("/repo", repo::routes())
+        .nest("/api", api::routes())
+        .merge(asset::routes())
 }
 
 async fn favicon(headers: HeaderMap) -> impl IntoResponse {

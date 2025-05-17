@@ -100,7 +100,6 @@ fn default_enter_path() -> String {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "kebab-case")]
 pub enum ManageType {
@@ -112,7 +111,7 @@ pub enum ManageType {
         #[serde(default)]
         use_mods: bool,
         #[serde(default)]
-        use_save_sync_mod: bool,
+        use_save_sync: bool,
     },
 }
 
@@ -135,7 +134,7 @@ mod test {
 
         let manage_type = ManageType::SugarCube {
             use_mods: true,
-            use_save_sync_mod: false,
+            use_save_sync: false,
         };
         let info2 = ManageInfo {
             name: Some("Test2".to_string()),
@@ -150,7 +149,7 @@ mod test {
         manage.insert("test2".to_string(), info2);
 
         let config = Config {
-            manage: manage,
+            manage,
             ..Default::default()
         };
         let ser3 = toml::to_string_pretty(&config).unwrap();

@@ -7,8 +7,8 @@ use routes::main_routes;
 use tokio::net::TcpListener;
 use tracing::info;
 use util::{
+    config::{config_ref, ReadConfig},
     AppState,
-    config::{ReadConfig, config_ref},
 };
 
 mod constants;
@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
         .merge(main_routes())
         .with_state(Arc::new(AppState::new(loaded_mapping)));
     let listener = TcpListener::bind(&addr).await?;
-    info!("Listening on {addr}");
+    info!("Listening on http://localhost:{port}");
 
     axum::serve(listener, app).await?;
 

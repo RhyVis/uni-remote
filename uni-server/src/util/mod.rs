@@ -20,6 +20,10 @@ impl AppState {
     pub fn get(&self, id: &str) -> Option<&LoadedType> {
         self.0.get(id)
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &LoadedType)> {
+        self.0.iter()
+    }
 }
 
 /// Current working directory, absolute path

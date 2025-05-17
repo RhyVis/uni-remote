@@ -1,24 +1,24 @@
 use std::{fs, sync::Arc};
 
 use axum::{
-    Router,
     extract::{Path, State},
     http::{
-        HeaderMap, StatusCode,
-        header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_NONE_MATCH},
+        header::{CACHE_CONTROL, CONTENT_TYPE, ETAG, IF_NONE_MATCH}, HeaderMap,
+        StatusCode,
     },
     response::IntoResponse,
     routing::get,
+    Router,
 };
 use lazy_static::lazy_static;
-use tracing::error;
+use tracing::{error, info};
 
 use crate::{
     constants::{CACHE_HEADER, SSI_MOD_ID},
     util::{
-        AppState,
         etag::{etag_check, etag_hash},
         extract::ExtractInfo,
+        AppState,
     },
 };
 
@@ -53,6 +53,8 @@ async fn handle_sc_mods(
     }
 
     if mod_id == SSI_MOD_ID {
+        info!("Responding to SSI Mod Request");
+
         if let Some(if_not_match) = headers.get(IF_NONE_MATCH) {
             if let Ok(cli_tag) = if_not_match.to_str() {
                 if cli_tag == SAVE_SYNC_INTEGRATION_ETAG.as_str() {
@@ -100,6 +102,7 @@ async fn handle_sc_mods(
                 .into_response();
         }
     };
+    info!("Responding to Mod ID: {mod_id}:{mod_sub_id}");
 
     if let Some(resp) = etag_check(&mod_data, &headers) {
         return resp;

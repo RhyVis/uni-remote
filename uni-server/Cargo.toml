@@ -1,6 +1,6 @@
 [package]
 name = "uni-server"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2024"
 license = "GPL-3.0"
 authors = ["Rhynia <rhynia_v@outlook.com>"]
@@ -20,5 +20,5 @@ toml = "0.8"
 walkdir = "2"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 chrono = "0.4"
-bon = "3"
 lazy_static = "1"
+rust-embed = "8"
