@@ -34,7 +34,7 @@ jobs:
           bun install
           bun run build
 
-          cd uni-server
+          cd ../uni-server
           cargo build --release --target x86_64-unknown-linux-musl --target x86_64-pc-windows-gnu
 
           tar -czvf uni-remote-linux.tar.gz -C target/x86_64-unknown-linux-musl/release uni-server
