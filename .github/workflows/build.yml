@@ -46,7 +46,7 @@ jobs:
       - name: Get version
         id: get_version
         run: |
-          cd server
+          cd uni-server
           VERSION=$(grep -m 1 'version = "' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "RELEASE_DATE=$(date +'%Y-%m-%d')" >> $GITHUB_ENV
